@@ -8,6 +8,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from . import models, database
+from . import auth
 
 # Membuat tabel otomatis di PostgreSQL saat server nyala
 models.Base.metadata.create_all(bind=database.engine)
@@ -76,6 +77,28 @@ def calculate_fee(entry_time, exit_time, rate: models.ParkingRate):
     
     # Batasi dengan harga maksimal harian
     return min(fee, rate.max_daily_rate)
+
+@app.post("/login")
+async def login(login_data: dict, db: Session = Depends(get_db)):
+    try:
+        user = db.query(models.User).filter(models.User.username == login_data["username"]).first()
+        
+        if not user:
+            raise HTTPException(status_code=401, detail="User tidak ditemukan")
+
+        # Cek apakah password cocok
+        is_valid = auth.verify_password(login_data["password"], user.password_hash)
+        
+        if not is_valid:
+            raise HTTPException(status_code=401, detail="Password salah")
+        
+        token = auth.create_access_token(data={"sub": user.username, "role": user.role})
+        return {"access_token": token, "token_type": "bearer"}
+        
+    except Exception as e:
+        # Ini akan memunculkan pesan error asli di terminal uvicorn
+        print(f"❌ LOGIN ERROR: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal Error: {str(e)}")
 
 @app.post("/simulate-entry")
 async def simulate_entry(db: Session = Depends(get_db)):

@@ -1,6 +1,7 @@
 from sqlalchemy import Column, Integer, String, DateTime, Float, ForeignKey
 from sqlalchemy.sql import func
 from .database import Base, SessionLocal, engine
+from . import auth
 
 class User(Base):
     __tablename__ = "users"
@@ -53,10 +54,10 @@ def seed_data():
 
         if db.query(User).filter(User.username == "adminNangkring").first() is None:
             admin = User(
-                username="adminNangkring",
-                password_hash="123qweasd",
-                role="admin"
-            )
+    username="adminNangkring",
+    password_hash=auth.hash_password("123qweasd"), # Password ini sangat aman (jauh di bawah 72 byte)
+    role="admin"
+)
             db.add(admin)
             print("Seed data untuk User Admin berhasil ditambahkan.")
 
