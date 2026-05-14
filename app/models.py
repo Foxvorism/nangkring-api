@@ -17,7 +17,7 @@ class ParkingLog(Base):
     plate_number = Column(String, index=True)
     entry_time = Column(DateTime(timezone=True), server_default=func.now())
     exit_time = Column(DateTime(timezone=True), nullable=True)
-    status = Column(String, default="IN")
+    status = Column(String, default="parked-in")
     total_amount = Column(Float, default=0.0)
 
 class ParkingRate(Base):
@@ -35,14 +35,14 @@ def seed_data():
         if db.query(ParkingRate).count() == 0:
             rates = [
                 ParkingRate(
-                    vehicle_type="motor", 
+                    vehicle_type="motorbike", 
                     first_hour_rate=3000, 
                     additional_hour_rate=2000, 
                     max_daily_rate=8000, 
                     overnight_rate=10000
                 ),
                 ParkingRate(
-                    vehicle_type="mobil", 
+                    vehicle_type="car", 
                     first_hour_rate=5000, 
                     additional_hour_rate=4000, 
                     max_daily_rate=20000, 
