@@ -108,7 +108,7 @@ async def simulate_entry(db: Session = Depends(get_db)):
     # 2. Cek kendaraan di dalam
     existing = db.query(models.ParkingLog).filter(
         models.ParkingLog.plate_number == detected_plate,
-        models.ParkingLog.status == "IN"
+        models.ParkingLog.status == "parked-in"
     ).first()
 
     if existing:
@@ -119,7 +119,7 @@ async def simulate_entry(db: Session = Depends(get_db)):
 
         # LOGIKA KELUAR
         existing.exit_time = datetime.now(timezone.utc)
-        existing.status = "OUT"
+        existing.status = "parked-out"
         existing.total_amount = calculate_fee(existing.entry_time, existing.exit_time, rate_info)
         db.commit()
         db.refresh(existing)
@@ -131,7 +131,7 @@ async def simulate_entry(db: Session = Depends(get_db)):
         }
     else:
         # Simulasi acak tipe kendaraan untuk kendaraan baru masuk.
-        v_type = random.choice(["motor", "mobil"])
+        v_type = random.choice(["motorbike", "car"])
 
         # Ambil tarif dari tipe kendaraan yang terdeteksi.
         rate_info = db.query(models.ParkingRate).filter(models.ParkingRate.vehicle_type == v_type).first()
@@ -142,7 +142,7 @@ async def simulate_entry(db: Session = Depends(get_db)):
         new_log = models.ParkingLog(
             plate_number=detected_plate,
             vehicle_id=rate_info.id, # Relasi ke tabel rate
-            status="IN"
+            status="parked-in"
         )
         db.add(new_log)
         db.commit()
@@ -157,8 +157,55 @@ async def simulate_entry(db: Session = Depends(get_db)):
     return {"status": "success", "type": v_type}
 
 @app.get("/logs")
-async def get_all_logs(db: Session = Depends(get_db)):
-    return db.query(models.ParkingLog).all()
+def get_logs(
+    db: Session = Depends(get_db),
+    vehicle_type: str = None,
+    status: str = None,
+    start_date: str = None,
+    end_date: str = None,
+    limit: int = 10,
+    offset: int = 0
+):
+    # 1. Gunakan join agar bisa mengambil data dari tabel parking_rates
+    query = db.query(
+        models.ParkingLog, 
+        models.ParkingRate.vehicle_type # Ambil kolom vehicle_type dari tabel rates
+    ).join(models.ParkingRate, models.ParkingLog.vehicle_id == models.ParkingRate.id)
+
+    # 2. Filter tetap sama seperti sebelumnya
+    if vehicle_type:
+        query = query.filter(models.ParkingRate.vehicle_type == vehicle_type)
+    
+    if status:
+        query = query.filter(models.ParkingLog.status == status)
+    
+    if start_date:
+        query = query.filter(models.ParkingLog.entry_time >= start_date)
+    if end_date:
+        query = query.filter(models.ParkingLog.entry_time <= end_date)
+
+    total_count = query.count()
+    results = query.order_by(models.ParkingLog.entry_time.desc()).offset(offset).limit(limit).all()
+
+    # 3. Format ulang data agar log.vehicle_type bisa dibaca langsung oleh frontend
+    formatted_logs = []
+    for log_obj, v_type in results:
+        # Kita tambahkan attribute vehicle_type ke dalam objek log sebelum dikirim
+        log_data = {
+            "id": log_obj.id,
+            "plate_number": log_obj.plate_number,
+            "entry_time": log_obj.entry_time,
+            "exit_time": log_obj.exit_time,
+            "status": log_obj.status,
+            "total_amount": log_obj.total_amount,
+            "vehicle_type": v_type # Ini yang dicari oleh frontend Anda
+        }
+        formatted_logs.append(log_data)
+
+    return {
+        "total": total_count,
+        "logs": formatted_logs
+    }
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
