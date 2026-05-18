@@ -1,0 +1,11 @@
+# Plat Indonesia terpanjang biasanya 8-9 karakter (Misal: B 1234 ABC = 8 karakter)
+max_plate_slots: 9
+# Masukkan semua kemungkinan angka, huruf, dan pad_char
+alphabet: "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_"
+pad_char: "_"
+img_height: 64
+img_width: 160
+keep_aspect_ratio: true
+interpolation: linear
+image_color_mode: rgb
+padding_color: 114
