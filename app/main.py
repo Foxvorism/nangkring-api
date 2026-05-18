@@ -2,6 +2,10 @@ import math
 import time
 import random
 import json
+import cv2
+import asyncio
+import base64
+import numpy as np
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import WebSocket, WebSocketDisconnect
@@ -9,12 +13,14 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from . import models, database
 from . import auth
+from .vision import VisionEngine
 
 # Membuat tabel otomatis di PostgreSQL saat server nyala
 models.Base.metadata.create_all(bind=database.engine)
 models.seed_data()
 
 app = FastAPI(title="nAngkrIng API")
+vision = VisionEngine()
 
 # Tambahkan baris ini tepat di bawah app = FastAPI()
 app.add_middleware(
@@ -210,8 +216,39 @@ def get_logs(
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
+    # HAPUS cv2.VideoCapture(0) dari sini!
+    
     try:
         while True:
-            await websocket.receive_text()
+            # 1. Tunggu kiriman foto dari Frontend
+            data = await websocket.receive_text()
+            
+            try:
+                payload = json.loads(data)
+                if "image" not in payload:
+                    continue
+                
+                # 2. Decode gambar Base64 dari React menjadi matrix OpenCV
+                # Format dari web biasanya: "data:image/jpeg;base64,/9j/4AAQSkZJRg..."
+                encoded_data = payload["image"].split(',')[1]
+                nparr = np.frombuffer(base64.b64decode(encoded_data), np.uint8)
+                frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+                if frame is not None:
+                    # 3. Jalankan AI Engine pada foto tersebut
+                    coords, plate_text = vision.detect_coords(frame)
+                    
+                    if coords:
+                        ws_payload = {
+                            "event": "PLATE_DETECTED",
+                            "plate_number": plate_text,
+                            "box": coords # [x1, y1, x2, y2]
+                        }
+                        # 4. Kirim hasil deteksi kembali ke frontend
+                        await websocket.send_text(json.dumps(ws_payload))
+                        
+            except Exception as e:
+                print(f"Error processing frame: {e}")
+                
     except WebSocketDisconnect:
         manager.disconnect(websocket)
