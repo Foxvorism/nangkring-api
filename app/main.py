@@ -15,6 +15,9 @@ from . import models, database
 from . import auth
 from .vision import VisionEngine
 from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException
+from datetime import datetime, timezone
+import math
 
 # Membuat tabel otomatis di PostgreSQL saat server nyala
 models.Base.metadata.create_all(bind=database.engine)
@@ -435,4 +438,37 @@ async def process_gate_out(req: GateOutRequest, db: Session = Depends(get_db)):
         "status": "success",
         "fee": existing.total_amount,
         "duration_hours": hours
+    }
+
+@app.get("/api/check-vehicle")
+async def check_vehicle_fee(plate_number: str, db: Session = Depends(get_db)):
+    # 1. Cari data kendaraan yang MASIH PARKIR
+    log = db.query(models.ParkingLog).filter(
+        models.ParkingLog.plate_number == plate_number.upper(),
+        models.ParkingLog.status == "parked-in"
+    ).first()
+
+    if not log:
+        raise HTTPException(status_code=404, detail="Kendaraan tidak ditemukan di area parkir.")
+
+    # 2. Ambil informasi tarif
+    rate_info = db.query(models.ParkingRate).filter(models.ParkingRate.id == log.vehicle_id).first()
+
+    # 3. Hitung durasi dan tarif REAL-TIME (tanpa menyimpannya ke DB)
+    current_time = datetime.now(timezone.utc)
+    duration = current_time - log.entry_time
+    total_seconds = duration.total_seconds()
+    
+    hours = math.ceil(total_seconds / 3600)
+    
+    # Gunakan ulang fungsi calculate_fee yang sudah Anda buat di atas
+    current_fee = calculate_fee(log.entry_time, current_time, rate_info)
+
+    return {
+        "status": "success",
+        "vehicle_type": rate_info.vehicle_type,
+        "plate_number": log.plate_number,
+        "entry_time": log.entry_time.isoformat(),
+        "duration_hours": hours,
+        "current_fee": current_fee
     }
