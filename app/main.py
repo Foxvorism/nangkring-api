@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from . import models, database
 from . import auth
 from .vision import VisionEngine
+from pydantic import BaseModel
 
 # Membuat tabel otomatis di PostgreSQL saat server nyala
 models.Base.metadata.create_all(bind=database.engine)
@@ -48,6 +49,13 @@ class ConnectionManager:
                 await connection.send_text(message)
             except Exception:
                 self.active_connections.remove(connection)
+
+class GateInRequest(BaseModel):
+    plate_number: str
+    vehicle_type: str
+
+class GateOutRequest(BaseModel):
+    plate_number: str
 
 manager = ConnectionManager()
 
@@ -252,3 +260,80 @@ async def websocket_endpoint(websocket: WebSocket):
                 
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+@app.post("/api/gate-in")
+async def process_gate_in(req: GateInRequest, db: Session = Depends(get_db)):
+    # 1. Cek apakah plat ini sudah masuk dan belum keluar (mencegah double entry)
+    existing = db.query(models.ParkingLog).filter(
+        models.ParkingLog.plate_number == req.plate_number,
+        models.ParkingLog.status == "parked-in"
+    ).first()
+
+    if existing:
+        return {"status": "error", "message": "Kendaraan ini masih ada di dalam area parkir!"}
+
+    # 2. Ambil tarif berdasarkan tipe kendaraan
+    rate_info = db.query(models.ParkingRate).filter(models.ParkingRate.vehicle_type == req.vehicle_type).first()
+    if not rate_info:
+        raise HTTPException(status_code=400, detail=f"Tarif untuk {req.vehicle_type} belum diatur!")
+
+    # 3. Simpan ke database
+    new_log = models.ParkingLog(
+        plate_number=req.plate_number,
+        vehicle_id=rate_info.id,
+        status="parked-in"
+    )
+    db.add(new_log)
+    db.commit()
+    db.refresh(new_log)
+
+    # 4. Beri tahu semua client (Dashboard/Log) ada mobil masuk
+    ws_payload = {
+        "event": "VEHICLE_ENTRY",
+        "plate_number": req.plate_number,
+        "vehicle_type": req.vehicle_type,
+    }
+    await manager.broadcast(json.dumps(ws_payload))
+
+    return {"status": "success", "message": "Berhasil masuk"}
+
+
+@app.post("/api/gate-out")
+async def process_gate_out(req: GateOutRequest, db: Session = Depends(get_db)):
+    # 1. Cari data parkir masuknya
+    existing = db.query(models.ParkingLog).filter(
+        models.ParkingLog.plate_number == req.plate_number,
+        models.ParkingLog.status == "parked-in"
+    ).first()
+
+    if not existing:
+        raise HTTPException(status_code=404, detail="Kendaraan tidak ditemukan atau sudah keluar")
+
+    rate_info = db.query(models.ParkingRate).filter(models.ParkingRate.id == existing.vehicle_id).first()
+
+    # 2. Catat waktu keluar dan hitung biaya
+    existing.exit_time = datetime.now(timezone.utc)
+    existing.status = "parked-out"
+    existing.total_amount = calculate_fee(existing.entry_time, existing.exit_time, rate_info)
+    
+    db.commit()
+    db.refresh(existing)
+
+    # 3. Hitung durasi (jam) untuk dikirim ke layar frontend
+    duration = existing.exit_time - existing.entry_time
+    hours = math.ceil(duration.total_seconds() / 3600)
+
+    # 4. Beri tahu semua client mobil sudah keluar
+    ws_payload = {
+        "event": "VEHICLE_EXIT",
+        "plate_number": req.plate_number,
+        "vehicle_type": rate_info.vehicle_type,
+        "fee": existing.total_amount
+    }
+    await manager.broadcast(json.dumps(ws_payload))
+
+    return {
+        "status": "success",
+        "fee": existing.total_amount,
+        "duration_hours": hours
+    }
