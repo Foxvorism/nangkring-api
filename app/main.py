@@ -59,6 +59,13 @@ class GateOutRequest(BaseModel):
 
 manager = ConnectionManager()
 
+
+def get_local_date(value: datetime) -> datetime.date:
+    if value.tzinfo is not None:
+        return value.astimezone().date()
+
+    return value.date()
+
 # Dependency untuk koneksi database
 def get_db():
     db = database.SessionLocal()
@@ -77,20 +84,108 @@ def fake_ai_detector():
 def calculate_fee(entry_time, exit_time, rate: models.ParkingRate):
     duration = exit_time - entry_time
     total_seconds = duration.total_seconds()
+    entry_date = get_local_date(entry_time)
+    exit_date = get_local_date(exit_time)
+    overstay_days = max(0, (exit_date - entry_date).days)
     
+    if overstay_days >= 1:
+        return overstay_days * rate.overnight_rate
+
     # Konversi ke jam (dibulatkan ke atas)
     hours = math.ceil(total_seconds / 3600)
-    days = duration.days
-
-    # Logika Menginap (Overnight)
-    if days >= 1:
-        return days * rate.overnight_rate
     
     # Logika Per Jam
     fee = rate.first_hour_rate + (max(0, hours - 1) * rate.additional_hour_rate)
     
     # Batasi dengan harga maksimal harian
     return min(fee, rate.max_daily_rate)
+
+
+def ensure_overstay_columns():
+    with database.engine.begin() as connection:
+        connection.exec_driver_sql(
+            "ALTER TABLE parking_logs ADD COLUMN IF NOT EXISTS overstay_days INTEGER NOT NULL DEFAULT 0"
+        )
+
+
+async def sync_overstay_logs():
+    db = database.SessionLocal()
+    try:
+        today = datetime.now().astimezone().date()
+        active_logs = db.query(models.ParkingLog).filter(
+            models.ParkingLog.exit_time.is_(None),
+            models.ParkingLog.status.in_(["parked-in", "overstay"]),
+        ).all()
+
+        for log in active_logs:
+            entry_date = get_local_date(log.entry_time)
+            desired_overstay_days = max(0, (today - entry_date).days)
+
+            if desired_overstay_days <= log.overstay_days:
+                continue
+
+            rate_info = db.query(models.ParkingRate).filter(
+                models.ParkingRate.id == log.vehicle_id
+            ).first()
+
+            if not rate_info:
+                continue
+
+            added_days = desired_overstay_days - log.overstay_days
+            log.overstay_days = desired_overstay_days
+            log.status = "overstay"
+            log.total_amount = (log.total_amount or 0) + (
+                added_days * rate_info.overnight_rate
+            )
+
+            db.commit()
+            db.refresh(log)
+
+            await manager.broadcast(
+                json.dumps(
+                    {
+                        "event": "OVERSTAY_ALERT",
+                        "plate_number": log.plate_number,
+                        "vehicle_type": rate_info.vehicle_type,
+                        "status": log.status,
+                        "overstay_days": log.overstay_days,
+                        "added_fee": added_days * rate_info.overnight_rate,
+                        "total_amount": log.total_amount,
+                    }
+                )
+            )
+    finally:
+        db.close()
+
+
+async def overstay_monitor(stop_event: asyncio.Event):
+    while not stop_event.is_set():
+        await sync_overstay_logs()
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=60)
+        except asyncio.TimeoutError:
+            continue
+
+
+@app.on_event("startup")
+async def startup_tasks():
+    ensure_overstay_columns()
+    app.state.overstay_stop_event = asyncio.Event()
+    app.state.overstay_task = asyncio.create_task(
+        overstay_monitor(app.state.overstay_stop_event)
+    )
+
+
+@app.on_event("shutdown")
+async def shutdown_tasks():
+    stop_event = getattr(app.state, "overstay_stop_event", None)
+    task = getattr(app.state, "overstay_task", None)
+
+    if stop_event:
+        stop_event.set()
+
+    if task:
+        await task
 
 @app.post("/login")
 async def login(login_data: dict, db: Session = Depends(get_db)):
@@ -315,6 +410,10 @@ async def process_gate_out(req: GateOutRequest, db: Session = Depends(get_db)):
     existing.exit_time = datetime.now(timezone.utc)
     existing.status = "parked-out"
     existing.total_amount = calculate_fee(existing.entry_time, existing.exit_time, rate_info)
+    existing.overstay_days = max(
+        0,
+        (get_local_date(existing.exit_time) - get_local_date(existing.entry_time)).days,
+    )
     
     db.commit()
     db.refresh(existing)

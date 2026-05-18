@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Float, ForeignKey
+from sqlalchemy import Column, Integer, String, DateTime, Float, ForeignKey, text
 from sqlalchemy.sql import func
 from .database import Base, SessionLocal, engine
 from . import auth
@@ -19,6 +19,7 @@ class ParkingLog(Base):
     exit_time = Column(DateTime(timezone=True), nullable=True)
     status = Column(String, default="parked-in")
     total_amount = Column(Float, default=0.0)
+    overstay_days = Column(Integer, default=0, nullable=False, server_default=text("0"))
 
 class ParkingRate(Base):
     __tablename__ = "parking_rates"
