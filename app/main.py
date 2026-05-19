@@ -6,6 +6,7 @@ import cv2
 import asyncio
 import base64
 import numpy as np
+import os
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import WebSocket, WebSocketDisconnect
@@ -26,10 +27,23 @@ models.seed_data()
 app = FastAPI(title="nAngkrIng API")
 vision = VisionEngine()
 
+_default_cors_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://nangkring.vercel.app",
+]
+_cors_origins_env = os.getenv("CORS_ORIGINS", "")
+_cors_origins = list(
+    dict.fromkeys(
+        _default_cors_origins
+        + [origin.strip() for origin in _cors_origins_env.split(",") if origin.strip()]
+    )
+)
+
 # Tambahkan baris ini tepat di bawah app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Di produksi nanti, ini harus spesifik
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
