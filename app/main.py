@@ -77,6 +77,8 @@ class GateOutRequest(BaseModel):
 
 manager = ConnectionManager()
 
+ACTIVE_PARKING_STATUSES = ["parked-in", "overstay"]
+
 
 def get_local_date(value: datetime) -> datetime.date:
     if value.tzinfo is not None:
@@ -235,7 +237,7 @@ async def simulate_entry(db: Session = Depends(get_db)):
     # 2. Cek kendaraan di dalam
     existing = db.query(models.ParkingLog).filter(
         models.ParkingLog.plate_number == detected_plate,
-        models.ParkingLog.status == "parked-in"
+        models.ParkingLog.status.in_(ACTIVE_PARKING_STATUSES)
     ).first()
 
     if existing:
@@ -379,7 +381,7 @@ async def process_gate_in(req: GateInRequest, db: Session = Depends(get_db)):
     # 1. Cek apakah plat ini sudah masuk dan belum keluar (mencegah double entry)
     existing = db.query(models.ParkingLog).filter(
         models.ParkingLog.plate_number == req.plate_number,
-        models.ParkingLog.status == "parked-in"
+        models.ParkingLog.status.in_(ACTIVE_PARKING_STATUSES)
     ).first()
 
     if existing:
@@ -416,7 +418,7 @@ async def process_gate_out(req: GateOutRequest, db: Session = Depends(get_db)):
     # 1. Cari data parkir masuknya
     existing = db.query(models.ParkingLog).filter(
         models.ParkingLog.plate_number == req.plate_number,
-        models.ParkingLog.status == "parked-in"
+        models.ParkingLog.status.in_(ACTIVE_PARKING_STATUSES)
     ).first()
 
     if not existing:
@@ -460,7 +462,7 @@ async def check_vehicle_fee(plate_number: str, db: Session = Depends(get_db)):
     # 1. Cari data kendaraan yang MASIH PARKIR
     log = db.query(models.ParkingLog).filter(
         models.ParkingLog.plate_number == plate_number.upper(),
-        models.ParkingLog.status == "parked-in"
+        models.ParkingLog.status.in_(ACTIVE_PARKING_STATUSES)
     ).first()
 
     if not log:
